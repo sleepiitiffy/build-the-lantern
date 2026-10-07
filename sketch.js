@@ -40,7 +40,11 @@ const BUILD_SECONDS = 4; // then on to full over this long, while movement conti
 // the moment the page loads, so movement would light the lantern while the words
 // were still on screen. Pressing the text is the only thing that starts it.
 let started = false;
-let promptHidden = false;
+
+// The element itself, kept rather than looked up each frame. p5's select('#start')
+// is a query on the whole document, so it also matches an element with that id
+// belonging to something else on the page.
+let startPrompt = null;
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -68,7 +72,7 @@ function setup() {
 // only this file to change. Positioned over the canvas, so it sits in the same
 // low place the glow will later take.
 function buildStartPrompt() {
-  const prompt = document.createElement('div');
+  const prompt = (startPrompt = document.createElement('div'));
   prompt.id = 'start';
   prompt.textContent = PROMPT_TEXT;
 
@@ -136,7 +140,17 @@ function deviceMoved() {
 // Step 6 — a held mouse button or key counts as movement on a desktop, where
 // there is no sensor and deviceMoved() never fires. This is the one input that
 // differs by platform; everything downstream reads the same brightness value.
+//
+// Desktop only, deliberately. A finger resting on a phone screen also arrives as
+// mousePressed, and letting that count would light the lantern whenever somebody
+// touched the glass — which is not walking, and is the opposite of what the piece
+// is about. The plan's step 6 says the same thing: holding must do nothing on a
+// phone.
 let holding = false;
+
+function isHolding() {
+  return window.isDesktop === true && holding;
+}
 
 function mousePressed() {
   holding = true;
@@ -176,24 +190,26 @@ function draw() {
   // Step 3 — the prompt leaves when it is pressed, and not a moment before. The
   // words stay up until the piece has genuinely been started, which means a
   // person who dismisses the iOS dialog still has something to tap again.
-  if (!promptHidden && started) {
-    select('#start').hide();
-    promptHidden = true;
-  }
-
-  // Nothing else happens until then. Before the press the lantern is only ever
-  // the ember, however much the phone is being moved.
+  // Nothing at all happens until the prompt is pressed: no hiding, no brightness
+  // change, no reaction to movement. This check comes first so that nothing below
+  // it can run early.
   if (!started) {
     moving = false;
     drawEmber();
     return;
   }
 
+  // Hidden only after the press. Hiding the element we already hold, rather than
+  // querying for it again.
+  if (startPrompt) {
+    startPrompt.style.display = 'none';
+  }
+
   // Steps 5 and 6 — one value, two possible drivers. The sensor is gated on its
   // own flag and is never read before permission; the hold is a desktop-only
   // stand-in. Either counts as movement, and nothing downstream knows the
   // difference.
-  const isMoving = (window.sensorsEnabled && moving) || holding;
+  const isMoving = (window.sensorsEnabled && moving) || isHolding();
 
   brightness = shapeBrightness(brightness, isMoving, deltaTime / 1000);
 
