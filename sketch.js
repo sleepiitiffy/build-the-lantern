@@ -24,6 +24,16 @@ const CORE_DIAMETER = 0.39; // of canvas width
 const EMBER_FLOOR = 0.06; // the brightness floor — faint, and never zero
 const MOVE_THRESHOLD = 0.5; // p5's default; tune this in the room at step 12
 
+// Step 7 — the shape of the rise and the fall, from references/layout-lantern.jpg.
+// The two directions are deliberately unequal: slow to lose the light, quick to
+// get it back. A fast recovery and a patient loss is how an eye behaves, and it
+// is what stops the piece feeling sluggish.
+const FADE_SECONDS = 5; // the main drop, to almost dark
+const TAIL_SECONDS = 8; // then a slower sink to the ember floor — longer than the fade
+const WAKE_SECONDS = 1; // back to partway in this long
+const WAKE_FRACTION = 0.5; // how much brightness that one second buys
+const BUILD_SECONDS = 4; // then on to full over this long, while movement continues
+
 function setup() {
   createCanvas(windowWidth, windowHeight);
 
@@ -88,9 +98,17 @@ let promptHidden = false;
 
 // Step 5 — one brightness value, 0 to 1, and the whole piece hangs off it. It
 // starts at the floor, so the resting state is already the ember: there is no
-// separate "off" state to draw. Step 7 gives the rise and fall their shape; for
-// now it snaps toward its target.
+// separate "off" state to draw.
 let brightness = EMBER_FLOOR;
+
+// Step 7 — edge detectors and elapsed time for the two curves. `wasMoving` is
+// what turns "is moving" into "just started" or "just stopped", which is when
+// the rise and the fall both begin.
+let wasMoving = false;
+let wakeElapsed = 0;
+let wakeFrom = EMBER_FLOOR;
+let fadeElapsed = 0;
+let fadeFrom = 1;
 
 // Step 5 — movement, read from the accelerometer p5 already exposes. This is a
 // p5 built-in, not something p5-phone provides: p5-phone only requests the
@@ -156,15 +174,81 @@ function draw() {
   // difference.
   const isMoving = (window.sensorsEnabled && moving) || holding;
 
-  // Step 7 shapes this properly. For now it snaps toward its target, so the dot
-  // jumps rather than eases.
-  brightness = constrain(isMoving ? 1 : EMBER_FLOOR, 0, 1);
+  brightness = shapeBrightness(brightness, isMoving, deltaTime / 1000);
 
   // deviceMoved() is an event, not a state, so it has to be cleared each frame or
   // one shake would leave the lantern lit for good.
   moving = false;
 
   drawEmber();
+}
+
+// Step 7 — the timings. Two curves rather than one rate, because the piece needs
+// a fast recovery and a slow, two-stage loss.
+//
+// Time is spent rather than tracked per frame, so the shape survives a dropped
+// frame or a backgrounded tab instead of stretching. The wake is timed from the
+// moment movement starts, since deviceMoved() is a yes/no and cannot report how
+// hard anyone is moving — that dial is step 14.
+function shapeBrightness(current, isMoving, dt) {
+  if (isMoving) {
+    if (!wasMoving) {
+      // Movement just started. Remember where the rise began, so WAKE_SECONDS
+      // and BUILD_SECONDS are measured against the ember rather than against
+      // whatever brightness happened to be on screen.
+      wakeFrom = current;
+      wakeElapsed = 0;
+    }
+    wakeElapsed += dt;
+
+    // First second climbs to partway, then the build carries on to full.
+    const wakePart = map(
+      constrain(wakeElapsed, 0, WAKE_SECONDS),
+      0,
+      WAKE_SECONDS,
+      wakeFrom,
+      wakeFrom + (1 - wakeFrom) * WAKE_FRACTION
+    );
+    const buildPart = map(
+      constrain(wakeElapsed - WAKE_SECONDS, 0, BUILD_SECONDS),
+      0,
+      BUILD_SECONDS,
+      wakeFrom + (1 - wakeFrom) * WAKE_FRACTION,
+      1
+    );
+
+    wasMoving = true;
+    return constrain(Math.max(wakePart, buildPart), 0, 1);
+  }
+
+  if (wasMoving) {
+    // Movement just stopped. Restart the fall from wherever it actually is, so
+    // an interrupted rise still fades smoothly from where it got to.
+    fadeFrom = current;
+    fadeElapsed = 0;
+    wasMoving = false;
+  }
+  fadeElapsed += dt;
+
+  // Stage one: down to almost dark in FADE_SECONDS. Stage two: a slower tail to
+  // the ember floor, which is never reached in zero — the lantern is still there
+  // when you stop, just very nearly out.
+  const fadeEnd = EMBER_FLOOR + (1 - EMBER_FLOOR) * 0.15; // "almost dark"
+
+  if (fadeElapsed <= FADE_SECONDS) {
+    // Still in the first stage, so the tail has no say yet.
+    return constrain(map(fadeElapsed, 0, FADE_SECONDS, fadeFrom, fadeEnd), EMBER_FLOOR, 1);
+  }
+
+  const tail = map(
+    constrain(fadeElapsed, FADE_SECONDS, FADE_SECONDS + TAIL_SECONDS),
+    FADE_SECONDS,
+    FADE_SECONDS + TAIL_SECONDS,
+    fadeEnd,
+    EMBER_FLOOR
+  );
+
+  return constrain(tail, EMBER_FLOOR, 1);
 }
 
 // Step 5 — the ember: the resting state, drawn at the brightness floor so
