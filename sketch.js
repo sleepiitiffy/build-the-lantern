@@ -13,7 +13,13 @@ const PROMPT_TEXT = 'Light the lantern';
 const PROMPT_SIZE = 15; // px — small, as drawn
 const PROMPT_UNDERLINE = true;
 const PROMPT_OPACITY = 0.55; // quiet against the dark, still legible
-const PROMPT_BOTTOM_MARGIN = 56; // px above the bottom edge, clear of the bars
+const PROMPT_CENTRE_OFFSET = 0; // px; 0 puts the words dead centre of the screen
+
+// The scrim dims the whole screen — lantern included — so it reads as a screen
+// waiting to be touched rather than as the piece already running. Kept well
+// below opaque: the ember has to stay visible through it, or there is nothing
+// to activate.
+const SCRIM_ALPHA = 0.55;
 
 // Step 5 — the glow's position, read off references/layout-lantern.jpg. Diameters
 // are fractions of the canvas width; the centre height is a fraction of the
@@ -34,17 +40,18 @@ const WAKE_SECONDS = 1; // back to partway in this long
 const WAKE_FRACTION = 0.5; // how much brightness that one second buys
 const BUILD_SECONDS = 4; // then on to full over this long, while movement continues
 
-// Step 3 — the piece stays inert until the prompt is actually pressed. This is
+// Step 3 — the piece stays inert until the screen is pressed. This is
 // deliberately driven by the press and not by window.sensorsEnabled: once iOS
 // has remembered the motion permission from an earlier visit, the sensor is live
-// the moment the page loads, so movement would light the lantern while the words
-// were still on screen. Pressing the text is the only thing that starts it.
+// the moment the page loads, so movement would light the lantern while the
+// prompt was still up. Pressing is the only thing that starts it.
 let started = false;
 
-// The element itself, kept rather than looked up each frame. p5's select('#start')
-// is a query on the whole document, so it also matches an element with that id
+// Both elements, kept rather than looked up each frame. p5's select('#start') is
+// a query on the whole document, so it also matches an element with that id
 // belonging to something else on the page.
 let startPrompt = null;
+let startScrim = null;
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -56,12 +63,12 @@ function setup() {
 
   buildStartPrompt();
 
-  // Step 3 — the motion permission is bound to that element rather than to a
-  // full-screen overlay, so the only thing the person taps is the word they can
-  // actually see. Must come after buildStartPrompt(), since it binds to the
-  // element that creates. Chrome 153+ holds motion still inside an iframe until
-  // the page has focus, and p5-phone 1.15.3 hands over focus on this tap.
-  enableSensorOn('#start');
+  // Step 3 — the motion permission is bound to the scrim, which is the whole
+  // screen, rather than to a library-drawn overlay. Must come after
+  // buildStartPrompt(), since it binds to the element that creates. Chrome 153+
+  // holds motion still inside an iframe until the page has focus, and p5-phone
+  // 1.15.3 hands over focus on this tap.
+  enableSensorOn('#scrim');
 
   // Step 5 — read only after window.sensorsEnabled is true. Below that, motion
   // values are stale or undefined rather than reporting stillness.
@@ -69,9 +76,37 @@ function setup() {
 }
 
 // Built here in sketch.js rather than in index.html, because the plan allows
-// only this file to change. Positioned over the canvas, so it sits in the same
-// low place the glow will later take.
+// only this file to change.
+//
+// Two layers, in this order from the bottom up: the canvas with the ember on it,
+// then a translucent scrim over the whole screen, then the words on top of that.
+// The scrim is the tap target, so pressing anywhere starts the piece — the words
+// are a label on the target rather than the target itself.
 function buildStartPrompt() {
+  // The scrim. Covers everything, sits above the canvas, and takes the press.
+  const scrim = (startScrim = document.createElement('div'));
+  scrim.id = 'scrim';
+  scrim.style.position = 'fixed';
+  scrim.style.inset = '0';
+  scrim.style.backgroundColor = `rgba(0, 0, 0, ${SCRIM_ALPHA})`;
+  scrim.style.zIndex = '1';
+  scrim.style.cursor = 'pointer';
+
+  // The start signal. Bound here rather than in p5's mousePressed, because the
+  // scrim now covers the canvas: p5 listens for pointer events on the canvas
+  // element, and anything landing on top of it never reaches those handlers.
+  // Listening on the scrim means a press anywhere on screen counts, including on
+  // the words themselves.
+  //
+  // This runs alongside p5-phone's own handler on this same element, so one
+  // press sets this flag and raises the motion permission together. Nothing
+  // stops propagation, because p5-phone still needs the event.
+  scrim.addEventListener('pointerdown', () => {
+    started = true;
+  });
+
+  document.body.appendChild(scrim);
+
   const prompt = (startPrompt = document.createElement('div'));
   prompt.id = 'start';
   prompt.textContent = PROMPT_TEXT;
@@ -79,7 +114,8 @@ function buildStartPrompt() {
   prompt.style.position = 'fixed';
   prompt.style.left = '0';
   prompt.style.right = '0';
-  prompt.style.bottom = `${PROMPT_BOTTOM_MARGIN}px`;
+  prompt.style.top = '50%';
+  prompt.style.transform = `translateY(calc(-50% + ${PROMPT_CENTRE_OFFSET}px))`;
   prompt.style.textAlign = 'center';
   prompt.style.fontFamily = 'inherit';
   prompt.style.fontSize = `${PROMPT_SIZE}px`;
@@ -100,16 +136,13 @@ function buildStartPrompt() {
   prompt.style.webkitUserSelect = 'none';
   prompt.style.webkitTapHighlightColor = 'transparent';
 
-  // Above the canvas.
-  prompt.style.zIndex = '1';
+  // Above the scrim, so the words are never dimmed by it.
+  prompt.style.zIndex = '2';
 
-  // The press that starts the piece. Added alongside p5-phone's own handler on
-  // this element rather than instead of it, so the permission request and this
-  // flag both fire from the same tap. stopPropagation is deliberately absent:
-  // p5-phone still needs the event to reach it.
-  prompt.addEventListener('pointerdown', () => {
-    started = true;
-  });
+  // The words are a label, not the target. Without this they would swallow taps
+  // meant for the scrim underneath, so pressing exactly on the text would do
+  // nothing.
+  prompt.style.pointerEvents = 'none';
 
   document.body.appendChild(prompt);
 }
@@ -199,8 +232,12 @@ function draw() {
     return;
   }
 
-  // Hidden only after the press. Hiding the element we already hold, rather than
-  // querying for it again.
+  // Both layers go together once the press has happened: the scrim first, so the
+  // screen stops reading as dormant, and the words with it. Hiding the elements
+  // we already hold, rather than querying for them again.
+  if (startScrim) {
+    startScrim.style.display = 'none';
+  }
   if (startPrompt) {
     startPrompt.style.display = 'none';
   }
