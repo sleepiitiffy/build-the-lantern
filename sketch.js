@@ -19,7 +19,15 @@ const PROMPT_CENTRE_OFFSET = 0; // px; 0 puts the words dead centre of the scree
 // waiting to be touched rather than as the piece already running. Kept well
 // below opaque: the ember has to stay visible through it, or there is nothing
 // to activate.
-const SCRIM_ALPHA = 0.55;
+const SCRIM_ALPHA = 0.3;
+
+// The blur, as a percentage of the glow's own diameter. Expressed that way rather
+// than in pixels so it holds on any screen size. Backdrop blur is what makes the
+// lantern read as being *behind* something rather than merely dimmed — it softens
+// the ember's edge at the same time as it darkens it, which is the same quality
+// references/mood-night-lanterns.jpg gets from being out of focus.
+const SCRIM_BLUR_FRAC = 0.5;
+const SCRIM_BLUR_PX = () => SCRIM_BLUR_FRAC * (HALO_DIAMETER * width);
 
 // Step 5 — the glow's position, read off references/layout-lantern.jpg. Diameters
 // are fractions of the canvas width; the centre height is a fraction of the
@@ -28,6 +36,13 @@ const GLOW_X_FRAC = 0.5; // horizontally centred, as drawn
 const GLOW_Y_FRAC = 0.64; // below the middle, as drawn
 const CORE_DIAMETER = 0.39; // of canvas width
 const EMBER_FLOOR = 0.06; // the brightness floor — faint, and never zero
+
+// Step 8 — the soft outer halo. Much larger than the core, because a glow reads
+// as light in the air around a source rather than as a bigger source. CORE_DIAMETER
+// is already set in step 5 and must not be duplicated here.
+const HALO_DIAMETER = 0.73; // of canvas width
+const HALO_ALPHA_MAX = 0.55; // at full brightness
+const CORE_ALPHA_MAX = 1; // at full brightness; the core is the brightest thing
 const MOVE_THRESHOLD = 0.5; // p5's default; tune this in the room at step 12
 
 // Step 7 — the shape of the rise and the fall, from references/layout-lantern.jpg.
@@ -92,6 +107,11 @@ function buildStartPrompt() {
   scrim.style.zIndex = '1';
   scrim.style.cursor = 'pointer';
 
+  // Applied here and again on resize, since the blur is a length and the glow's
+  // size is a fraction of the canvas.
+  scrim.style.backdropFilter = `blur(${SCRIM_BLUR_PX()}px)`;
+  scrim.style.webkitBackdropFilter = `blur(${SCRIM_BLUR_PX()}px)`;
+
   // The start signal. Bound here rather than in p5's mousePressed, because the
   // scrim now covers the canvas: p5 listens for pointer events on the canvas
   // element, and anything landing on top of it never reaches those handlers.
@@ -150,7 +170,7 @@ function buildStartPrompt() {
 // Step 5 — one brightness value, 0 to 1, and the whole piece hangs off it. It
 // starts at the floor, so the resting state is already the ember: there is no
 // separate "off" state to draw.
-let brightness = EMBER_FLOOR;
+let lanternBrightness = EMBER_FLOOR;
 
 // Step 7 — edge detectors and elapsed time for the two curves. `wasMoving` is
 // what turns "is moving" into "just started" or "just stopped", which is when
@@ -228,7 +248,7 @@ function draw() {
   // it can run early.
   if (!started) {
     moving = false;
-    drawEmber();
+    drawLantern();
     return;
   }
 
@@ -248,13 +268,13 @@ function draw() {
   // difference.
   const isMoving = (window.sensorsEnabled && moving) || isHolding();
 
-  brightness = shapeBrightness(brightness, isMoving, deltaTime / 1000);
+  lanternBrightness = shapeBrightness(lanternBrightness, isMoving, deltaTime / 1000);
 
   // deviceMoved() is an event, not a state, so it has to be cleared each frame or
   // one shake would leave the lantern lit for good.
   moving = false;
 
-  drawEmber();
+  drawLantern();
 }
 
 // Step 7 — the timings. Two curves rather than one rate, because the piece needs
@@ -325,14 +345,47 @@ function shapeBrightness(current, isMoving, dt) {
   return constrain(tail, EMBER_FLOOR, 1);
 }
 
-// Step 5 — the ember: the resting state, drawn at the brightness floor so
-// somebody who has never moved still sees a light. Position and size come from
-// the layout drawing.
-function drawEmber() {
-  const d = CORE_DIAMETER * width;
+// Step 8 — the lantern: a soft outer halo with a brighter core inside it, both
+// centred on the glow point, both driven by the brightness value.
+//
+// The soft edge is a real radial gradient rather than a stack of concentric
+// circles, because p5 only draws hard-edged shapes and stacked circles band
+// visibly at low brightness on a phone. Two details make or break it, and both
+// are near-invisible on a laptop:
+//
+//   - the outermost colour stop must sit at zero alpha. Fill the gradient's
+//     bounding box and anything beyond its outer radius takes that last stop, so
+//     a non-zero one paints the corners and puts a visible square around the halo.
+//   - each stop carries its own colour and its own alpha, rather than fading
+//     through transparent black, which turns the whole falloff into grey haze.
+function drawLantern() {
+  const cx = width * GLOW_X_FRAC;
+  const cy = height * GLOW_Y_FRAC;
+  const b = constrain(lanternBrightness, 0, 1);
+
+  // Both shapes grow as well as brighten, which is the "a little bigger" from the
+  // layout. The halo grows less than the core: it is light in the air, not a
+  // bigger source.
+  const r = (HALO_DIAMETER * width * map(b, 0, 1, 0.72, 1)) / 2;
+
+  const grad = drawingContext.createRadialGradient(cx, cy, 0, cx, cy, r);
+  grad.addColorStop(0, color(242, 244, 245, HALO_ALPHA_MAX * b * 255).toString());
+  grad.addColorStop(0.45, color(242, 244, 245, HALO_ALPHA_MAX * b * 160).toString());
+  // Zero alpha at the outer edge, or the corners of the fill pick this stop up
+  // and the halo gains a square edge.
+  grad.addColorStop(1, color(242, 244, 245, 0).toString());
+
+  drawingContext.fillStyle = grad;
+  drawingContext.beginPath();
+  drawingContext.arc(cx, cy, r, 0, TWO_PI);
+  drawingContext.closePath();
+  drawingContext.fill();
+
+  // The core, inside the halo. p5's own circle is fine here: it has a hard edge
+  // by design, which is what a filament looks like.
   noStroke();
-  fill(242, 244, 245, constrain(brightness, 0, 1) * 255);
-  circle(width * GLOW_X_FRAC, height * GLOW_Y_FRAC, d);
+  fill(242, 244, 245, CORE_ALPHA_MAX * b * 255);
+  circle(cx, cy, CORE_DIAMETER * width * map(b, 0, 1, 0.6, 1));
 }
 
 // Step 4 — requested from mouseReleased, deliberately. iOS refuses the first
@@ -374,4 +427,11 @@ function keyReleased() {
 // them, and the glow is meant to sit low.
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
+
+  // The scrim's blur is a length derived from the canvas width, so it has to be
+  // recomputed rather than left at whatever the screen was on load.
+  if (startScrim) {
+    startScrim.style.backdropFilter = `blur(${SCRIM_BLUR_PX()}px)`;
+    startScrim.style.webkitBackdropFilter = `blur(${SCRIM_BLUR_PX()}px)`;
+  }
 }
