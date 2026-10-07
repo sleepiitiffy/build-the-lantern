@@ -34,6 +34,14 @@ const WAKE_SECONDS = 1; // back to partway in this long
 const WAKE_FRACTION = 0.5; // how much brightness that one second buys
 const BUILD_SECONDS = 4; // then on to full over this long, while movement continues
 
+// Step 3 — the piece stays inert until the prompt is actually pressed. This is
+// deliberately driven by the press and not by window.sensorsEnabled: once iOS
+// has remembered the motion permission from an earlier visit, the sensor is live
+// the moment the page loads, so movement would light the lantern while the words
+// were still on screen. Pressing the text is the only thing that starts it.
+let started = false;
+let promptHidden = false;
+
 function setup() {
   createCanvas(windowWidth, windowHeight);
 
@@ -91,10 +99,16 @@ function buildStartPrompt() {
   // Above the canvas.
   prompt.style.zIndex = '1';
 
+  // The press that starts the piece. Added alongside p5-phone's own handler on
+  // this element rather than instead of it, so the permission request and this
+  // flag both fire from the same tap. stopPropagation is deliberately absent:
+  // p5-phone still needs the event to reach it.
+  prompt.addEventListener('pointerdown', () => {
+    started = true;
+  });
+
   document.body.appendChild(prompt);
 }
-
-let promptHidden = false;
 
 // Step 5 — one brightness value, 0 to 1, and the whole piece hangs off it. It
 // starts at the floor, so the resting state is already the ember: there is no
@@ -159,13 +173,20 @@ async function requestWakeLock() {
 function draw() {
   background(BG_NEAR_BLACK);
 
-  // Step 3 — the prompt leaves as soon as motion is actually granted, not when
-  // the request was merely made. Gating on the flag rather than on the tap means
-  // a person who dismisses the iOS dialog keeps the prompt and can try again,
-  // instead of being left staring at an empty screen with no way forward.
-  if (!promptHidden && window.sensorsEnabled) {
+  // Step 3 — the prompt leaves when it is pressed, and not a moment before. The
+  // words stay up until the piece has genuinely been started, which means a
+  // person who dismisses the iOS dialog still has something to tap again.
+  if (!promptHidden && started) {
     select('#start').hide();
     promptHidden = true;
+  }
+
+  // Nothing else happens until then. Before the press the lantern is only ever
+  // the ember, however much the phone is being moved.
+  if (!started) {
+    moving = false;
+    drawEmber();
+    return;
   }
 
   // Steps 5 and 6 — one value, two possible drivers. The sensor is gated on its
