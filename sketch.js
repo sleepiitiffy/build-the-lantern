@@ -55,6 +55,54 @@ const WAKE_SECONDS = 1; // back to partway in this long
 const WAKE_FRACTION = 0.5; // how much brightness that one second buys
 const BUILD_SECONDS = 4; // then on to full over this long, while movement continues
 
+// Step 9 — the three colours, taken as a cool moon with a warm edge. Pale
+// near-white at the centre, grey through the middle, amber at the rim. The
+// layout drawing annotates the edge "warm, soft edge fades", and this is that
+// annotation kept: the warmth is the outermost layer, not the whole light.
+const CORE_COLOUR = [242, 244, 245]; // pale near-white — the cool centre
+const MID_COLOUR = [138, 144, 153]; // grey — the body of the halo
+const RIM_COLOUR = [201, 138, 60]; // warm amber — the edge, and the first to go
+
+// Step 10 — how far each layer falls by the time brightness reaches the ember.
+// The rim retreats first and the core holds on longest, so a fading lantern reads
+// as growing colder and further away rather than merely dimmer. That is the idea
+// of the piece, and it is why each layer gets its own range instead of one shared
+// opacity.
+const RIM_ALPHA_AT_EMBER = 0; // the amber is gone completely at the ember
+const CORE_ALPHA_AT_EMBER = 0.16; // and the pale core is only just still there
+
+// Step 11 — the rays. Short ticks around the glow, each flickering on its own
+// slow, irregular cycle. Kept slow on purpose: fast flicker reads as a broken
+// bulb, and strobing is genuinely unpleasant in a piece meant to be carried at
+// night.
+const RAY_COUNT = 12; // counted from the layout drawing
+const RAY_LENGTH = 0.06; // of canvas width
+const RAY_WIDTH = 1.5; // px
+const RAY_MAX_ALPHA = 0.32; // at full brightness
+const RAY_FLICKER_SPEED = 0.55; // Hz-ish; low and irregular
+const RAY_FLICKER_DEPTH = 0.45; // how much each ray's length and alpha swing
+const RAY_JITTER = 0.12; // radians of positional drift, so they are not evenly spaced
+
+// Step 13 — grain, optional and off by default. Several grainy phones in a dark
+// room raise the light in the room, which undoes the darkness the piece depends
+// on, and loadPixels over a retina canvas every frame is the most expensive thing
+// this sketch would ever do. Set to true only if the dark looks synthetic.
+const GRAIN_ON = false;
+const GRAIN_ALPHA = 6; // very low
+const GRAIN_DENSITY = 0.06; // fraction of pixels touched per frame
+
+// Step 14 — the continuous wobble, optional and off by default. This is the
+// second half of "cheap first, both eventually": a dial, so brightness answers to
+// how strongly someone is moving instead of to a timer.
+//
+// p5 has no rotation-rate globals. Do not read rotationRateAlpha,
+// rotationRateBeta or rotationRateGamma — they do not exist in p5.js 1.x or 2.x,
+// p5-phone does not add them, and reading them throws a ReferenceError every
+// frame, which stops the sketch drawing.
+const WOBBLE_ON = false;
+const WOBBLE_THRESHOLD = 0.12; // leftover acceleration that counts as walking
+const WOBBLE_GAIN = 1.6; // how hard the dial drives brightness
+
 // Step 3 — the piece stays inert until the screen is pressed. This is
 // deliberately driven by the press and not by window.sensorsEnabled: once iOS
 // has remembered the motion permission from an earlier visit, the sensor is live
@@ -190,6 +238,34 @@ function deviceMoved() {
   moving = true;
 }
 
+// Step 14 — the continuous dial, off by default. The accelerometer reading
+// includes gravity — roughly 1g when the phone is still — so the gravity baseline
+// is subtracted by smoothing and only the leftover wobble is used. That leftover
+// is the closest thing a phone has to "how hard is this person walking", since
+// deviceMoved() is only ever a yes or no.
+let wobble = 0;
+let gravityX = 0;
+let gravityY = 0;
+let gravityZ = 0;
+
+function readWobble() {
+  if (!WOBBLE_ON) return 0;
+  if (!window.sensorsEnabled) return 0;
+
+  gravityX = lerp(gravityX, accelerationX, 0.9);
+  gravityY = lerp(gravityY, accelerationY, 0.9);
+  gravityZ = lerp(gravityZ, accelerationZ, 0.9);
+
+  const dx = accelerationX - gravityX;
+  const dy = accelerationY - gravityY;
+  const dz = accelerationZ - gravityZ;
+  const magnitude = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+  // Smoothed again, so a single jolt does not spike the whole lantern.
+  wobble = lerp(wobble, magnitude, 0.25);
+  return wobble;
+}
+
 // Step 6 — a held mouse button or key counts as movement on a desktop, where
 // there is no sensor and deviceMoved() never fires. This is the one input that
 // differs by platform; everything downstream reads the same brightness value.
@@ -270,11 +346,19 @@ function draw() {
 
   lanternBrightness = shapeBrightness(lanternBrightness, isMoving, deltaTime / 1000);
 
+  // Step 14 — when the dial is on, it can push the brightness above what the
+  // timer alone would reach, so a brisk walk gets more light than an amble.
+  if (WOBBLE_ON && isMoving) {
+    const drive = constrain((readWobble() - WOBBLE_THRESHOLD) * WOBBLE_GAIN, 0, 1);
+    lanternBrightness = constrain(Math.max(lanternBrightness, drive), 0, 1);
+  }
+
   // deviceMoved() is an event, not a state, so it has to be cleared each frame or
   // one shake would leave the lantern lit for good.
   moving = false;
 
   drawLantern();
+  drawGrain();
 }
 
 // Step 7 — the timings. Two curves rather than one rate, because the piece needs
@@ -366,26 +450,101 @@ function drawLantern() {
   // Both shapes grow as well as brighten, which is the "a little bigger" from the
   // layout. The halo grows less than the core: it is light in the air, not a
   // bigger source.
-  const r = (HALO_DIAMETER * width * map(b, 0, 1, 0.72, 1)) / 2;
+  const rHalo = (HALO_DIAMETER * width * map(b, 0, 1, 0.72, 1)) / 2;
+  const rCore = (CORE_DIAMETER * width * map(b, 0, 1, 0.6, 1)) / 2;
 
-  const grad = drawingContext.createRadialGradient(cx, cy, 0, cx, cy, r);
-  grad.addColorStop(0, color(242, 244, 245, HALO_ALPHA_MAX * b * 255).toString());
-  grad.addColorStop(0.45, color(242, 244, 245, HALO_ALPHA_MAX * b * 160).toString());
+  // Steps 9 and 10 — the three layers, each with its own alpha range. As
+  // brightness drops the amber rim is scaled down hardest and the pale core least,
+  // so the light loses its warmth before it loses its brightness.
+  const rimA = map(b, 0, 1, RIM_ALPHA_AT_EMBER, HALO_ALPHA_MAX) * 255;
+  const midA = map(b, 0, 1, RIM_ALPHA_AT_EMBER * 0.4, HALO_ALPHA_MAX * 0.55) * 255;
+  const coreA = map(b, 0, 1, CORE_ALPHA_AT_EMBER, CORE_ALPHA_MAX) * 255;
+
+  // The halo. Warm colour confined to the outermost fifth, at low alpha — any
+  // stronger and it stops being an edge and becomes a brown ring with a visible
+  // boundary. MID_COLOUR is kept faint on purpose: a mid grey over near-black
+  // reads as navy once it sits between a cool core and a warm rim.
+  const halo = drawingContext.createRadialGradient(cx, cy, 0, cx, cy, rHalo);
+  halo.addColorStop(0, rgba(CORE_COLOUR, coreA * 0.5).toString());
+  halo.addColorStop(0.4, rgba(MID_COLOUR, midA * 0.55).toString());
+  halo.addColorStop(0.8, rgba(RIM_COLOUR, rimA * 0.3).toString());
   // Zero alpha at the outer edge, or the corners of the fill pick this stop up
   // and the halo gains a square edge.
-  grad.addColorStop(1, color(242, 244, 245, 0).toString());
+  halo.addColorStop(1, rgba(RIM_COLOUR, 0).toString());
 
-  drawingContext.fillStyle = grad;
+  drawingContext.fillStyle = halo;
   drawingContext.beginPath();
-  drawingContext.arc(cx, cy, r, 0, TWO_PI);
+  drawingContext.arc(cx, cy, rHalo, 0, TWO_PI);
   drawingContext.closePath();
   drawingContext.fill();
 
-  // The core, inside the halo. p5's own circle is fine here: it has a hard edge
-  // by design, which is what a filament looks like.
-  noStroke();
-  fill(242, 244, 245, CORE_ALPHA_MAX * b * 255);
-  circle(cx, cy, CORE_DIAMETER * width * map(b, 0, 1, 0.6, 1));
+  // The core is a gradient too, not a filled circle. A hard-edged disc reads as a
+  // flat ball sitting on top of the glow rather than as the brightest part of it.
+  const core = drawingContext.createRadialGradient(cx, cy, 0, cx, cy, rCore);
+  core.addColorStop(0, rgba(CORE_COLOUR, coreA).toString());
+  core.addColorStop(0.55, rgba(CORE_COLOUR, coreA * 0.72).toString());
+  core.addColorStop(1, rgba(CORE_COLOUR, 0).toString());
+
+  drawingContext.fillStyle = core;
+  drawingContext.beginPath();
+  drawingContext.arc(cx, cy, rCore, 0, TWO_PI);
+  drawingContext.closePath();
+  drawingContext.fill();
+
+  // Step 11 — the rays, sitting between the core and the halo's rim. Each one
+  // flickers on its own slow cycle, offset by its index, so they never pulse in
+  // unison and never settle into a rhythm you can predict.
+  //
+  // Drawn in the pale core colour rather than the amber: warm dashes radiating
+  // outward read as a sunburst, which is the opposite of a lantern. Their length
+  // and opacity both swing, so they shimmer rather than sit.
+  if (RAY_COUNT > 0) {
+    const baseLen = RAY_LENGTH * width;
+    const inner = rCore * 0.92;
+    const t = millis() / 1000;
+
+    strokeWeight(RAY_WIDTH);
+    strokeCap(ROUND);
+    for (let i = 0; i < RAY_COUNT; i++) {
+      // Per-ray phase, so no two flicker together.
+      const flicker = noise(i * 13.7, t * RAY_FLICKER_SPEED);
+      const len = baseLen * map(flicker, 0, 1, 1 - RAY_FLICKER_DEPTH, 1);
+      const a = RAY_MAX_ALPHA * b * map(flicker, 0, 1, 0.4, 1);
+
+      const angle = (TWO_PI * i) / RAY_COUNT + RAY_JITTER * noise(i * 4.1, 3.7);
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+
+      stroke(...CORE_COLOUR, a * 255);
+      line(cx + cos * inner, cy + sin * inner, cx + cos * (inner + len), cy + sin * (inner + len));
+    }
+  }
+}
+
+// Steps 9 and 10 — an [r,g,b] triple with an alpha, as a p5 colour. Written out
+// rather than using color(r,g,b,a) so the three palette constants stay as plain
+// arrays and can be tuned without touching any drawing code.
+function rgba(rgb, a) {
+  return color(rgb[0], rgb[1], rgb[2], constrain(a, 0, 255));
+}
+
+// Step 13 — grain, off by default. loadPixels/updatePixels over a full-screen
+// retina canvas is the most expensive thing this sketch would do, so it is opt-in
+// and kept near the threshold of visibility.
+function drawGrain() {
+  if (!GRAIN_ON) return;
+
+  loadPixels();
+  const px = pixels;
+  const step = constrain(round(1 / GRAIN_DENSITY), 1, 12);
+  const lift = random(-GRAIN_ALPHA, GRAIN_ALPHA);
+
+  for (let i = 0; i < px.length; i += 4 * step) {
+    px[i] = constrain(px[i] + lift, 0, 255);
+    px[i + 1] = constrain(px[i + 1] + lift, 0, 255);
+    px[i + 2] = constrain(px[i + 2] + lift, 0, 255);
+  }
+  updatePixels();
 }
 
 // Step 4 — requested from mouseReleased, deliberately. iOS refuses the first
