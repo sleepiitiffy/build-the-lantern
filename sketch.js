@@ -24,6 +24,13 @@ function setup() {
   lockGestures();
 
   buildStartPrompt();
+
+  // Step 3 — the motion permission is bound to that element rather than to a
+  // full-screen overlay, so the only thing the person taps is the word they can
+  // actually see. Must come after buildStartPrompt(), since it binds to the
+  // element that creates. Chrome 153+ holds motion still inside an iframe until
+  // the page has focus, and p5-phone 1.15.3 hands over focus on this tap.
+  enableSensorOn('#start');
 }
 
 // Built here in sketch.js rather than in index.html, because the plan allows
@@ -64,8 +71,19 @@ function buildStartPrompt() {
   document.body.appendChild(prompt);
 }
 
+let promptHidden = false;
+
 function draw() {
   background(BG_NEAR_BLACK);
+
+  // Step 3 — the prompt leaves as soon as motion is actually granted, not when
+  // the request was merely made. Gating on the flag rather than on the tap means
+  // a person who dismisses the iOS dialog keeps the prompt and can try again,
+  // instead of being left staring at an empty screen with no way forward.
+  if (!promptHidden && window.sensorsEnabled) {
+    select('#start').hide();
+    promptHidden = true;
+  }
 }
 
 // The phone's browser bars collapse after the first scroll. A canvas left at
